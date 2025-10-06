@@ -240,7 +240,9 @@ class LDAPHandler(Thread):
         token = auth_choice.getComponent().asOctets()
         logging.debug("LDAP: Received Sicily NTLM token: %r" % token)
         from impacket.structure import hexdump
-        logging.debug("LDAP: Sicily NTLM token hexdump:\n%s" % hexdump(token))
+        logging.debug("LDAP: Sicily NTLM token hexdump:")
+        if logging.getLogger().level == logging.DEBUG:
+            hexdump(token)
 
         if not token.startswith(b'NTLMSSP\x00'):
             logging.error("Unknown NTLM message type")
@@ -279,8 +281,9 @@ class LDAPHandler(Thread):
             
             mech_token = mech_token[ntlm_start:]
             from impacket.structure import hexdump
-            logging.debug("LDAP: NTLM message from mech_token hexdump:\n%s" % hexdump(mech_token))
-
+            logging.debug("LDAP: NTLM message from mech_token hexdump:")
+            if logging.getLogger().level == logging.DEBUG:
+                hexdump(mech_token)
             if not mech_token.startswith(b'NTLMSSP\x00'):
                 logging.error("Unknown NTLM message type")
                 return
@@ -355,7 +358,9 @@ class LDAPHandler(Thread):
                 return
         
         from impacket.structure import hexdump
-        logging.debug("LDAP: auth_message_data hexdump:\n%s" % hexdump(auth_message_data))
+        logging.debug("LDAP: auth_message_data hexdump:")
+        if logging.getLogger().level == logging.DEBUG:
+            hexdump(auth_message_data)
         
         authenticate_message = ntlm.NTLMAuthChallengeResponse()
         authenticate_message.fromString(auth_message_data)

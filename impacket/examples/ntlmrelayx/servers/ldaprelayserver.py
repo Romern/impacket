@@ -375,6 +375,21 @@ class LDAPHandler(Thread):
 
         self.conn.sendall(encoder.encode(response_ldap_message))
 
+    @staticmethod
+    def check_signing_or_sealing_required(authenticateMessageBlob):
+        if struct.unpack('B', authenticateMessageBlob[:1])[0] == SPNEGO_NegTokenResp.SPNEGO_NEG_TOKEN_RESP:
+            respToken2 = SPNEGO_NegTokenResp(authenticateMessageBlob)
+            token = respToken2['ResponseToken']
+        else:
+            token = authenticateMessageBlob
+
+        authMessage = ntlm.NTLMAuthChallengeResponse()
+        authMessage.fromString(token)
+        if authMessage['flags'] & ntlm.NTLMSSP_NEGOTIATE_SIGN == ntlm.NTLMSSP_NEGOTIATE_SIGN or \
+           authMessage['flags'] & ntlm.NTLMSSP_NEGOTIATE_SEAL == ntlm.NTLMSSP_NEGOTIATE_SEAL:
+            return True
+        return False
+
     def handle_auth(self, ldap_message, auth_message_data):
         if self.challengeMessage is None:
             if self.addr[0] in self.server.challenges:
@@ -411,7 +426,12 @@ class LDAPHandler(Thread):
             self.server.targetprocessor.registerTarget(self.server.target, False, self.server.authUser)
 
         bind_response = ldapasn1.BindResponse()
-        bind_response['resultCode'] = ldapasn1.ResultCode('success')
+        if self.check_signing_or_sealing_required(auth_message_data):
+            # with signing or sealing, we cannot read the traffic, so we drop the client
+            logging.info("LDAP: Incoming connection requires signing or sealing, so we cannot read the traffic and close the connection.")
+            bind_response['resultCode'] = ldapasn1.ResultCode('invalidCredentials')
+        else:
+            bind_response['resultCode'] = ldapasn1.ResultCode('success')
         bind_response['matchedDN'] = ''
         bind_response['diagnosticMessage'] = ''
         

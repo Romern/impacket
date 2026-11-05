@@ -24,7 +24,7 @@
 #   Alberto Solino (@agsolino)
 #
 from impacket import system_errors
-from impacket.dcerpc.v5.dtypes import ULONGLONG, UINT, USHORT, LPWSTR, WSTR, DWORD, ULONG, NULL
+from impacket.dcerpc.v5.dtypes import ULONGLONG, UINT, USHORT, LPWSTR, WSTR, DWORD, ULONG, LONG, FLOAT, NULL
 from impacket.dcerpc.v5.ndr import NDRCALL, NDRSTRUCT, NDRUNION, NDRPOINTER, NDRUniConformantArray
 from impacket.dcerpc.v5.rpcrt import DCERPCException
 from impacket.uuid import uuidtup_to_bin
@@ -145,6 +145,23 @@ PRINTER_NOTIFY_CATEGORY_ALL = 0x00010000
 PRINTER_NOTIFY_CATEGORY_3D  = 0x00020000
 
 
+# 2.2.3.13 BIDI_TYPE Enumeration
+BIDI_NULL   = 0
+BIDI_INT    = 1
+BIDI_FLOAT  = 2
+BIDI_BOOL   = 3
+BIDI_STRING = 4
+BIDI_TEXT   = 5
+BIDI_ENUM   = 6
+BIDI_BLOB   = 7
+
+# 3.1.4.2.27 RpcSendRecvBidiData Actions
+BIDI_ACTION_ENUM_SCHEMA       = 'EnumSchema'
+BIDI_ACTION_GET               = 'Get'
+BIDI_ACTION_SET               = 'Set'
+BIDI_ACTION_GET_ALL           = 'GetAll'
+BIDI_ACTION_GET_WITH_ARGUMENT = 'GetWithArgument'
+
 # 3.1.4.4.8 RpcAddPrinterDriverEx Values
 APD_STRICT_UPGRADE              = 0x00000001
 APD_STRICT_DOWNGRADE            = 0x00000002
@@ -183,6 +200,117 @@ class DEVMODE_CONTAINER(NDRSTRUCT):
     structure =  (
         ('cbBuf',DWORD),
         ('pDevMode',PBYTE_ARRAY),
+    )
+
+# 2.2.1.2.12 RPC_BINARY_CONTAINER
+class RPC_BINARY_CONTAINER(NDRSTRUCT):
+    structure = (
+        ('cbBuf', DWORD),
+        ('pszString', PBYTE_ARRAY),
+    )
+
+# 2.2.1.12.3 RPC_BIDI_DATA
+class RPC_BIDI_DATA_UNION(NDRUNION):
+    commonHdr = (
+        ('tag', ULONG),
+    )
+    union = {
+        BIDI_NULL   : ('bData', LONG),
+        BIDI_INT    : ('iData', LONG),
+        BIDI_FLOAT  : ('fData', FLOAT),
+        BIDI_BOOL   : ('bData', LONG),
+        BIDI_STRING : ('sData', LPWSTR),
+        BIDI_TEXT   : ('sData', LPWSTR),
+        BIDI_ENUM   : ('sData', LPWSTR),
+        BIDI_BLOB   : ('biData', RPC_BINARY_CONTAINER),
+    }
+
+class RPC_BIDI_DATA(NDRSTRUCT):
+    structure = (
+        ('dwBidiType', DWORD),
+        ('u', RPC_BIDI_DATA_UNION),
+    )
+
+    # NDRSTRUCT does not yet implement NDR64 trailing gaps. The scalar union
+    # arms still require 8-byte structure alignment because of the pointer arms.
+    def getData(self, soFar=0):
+        data = NDRSTRUCT.getData(self, soFar)
+        if self._isNDR64:
+            data += b'\x00' * (-(soFar + len(data)) % self.getAlignment())
+        return data
+
+    def fromString(self, data, offset=0):
+        size = NDRSTRUCT.fromString(self, data, offset)
+        if self._isNDR64:
+            size += -(offset + size) % self.getAlignment()
+        return size
+
+# 2.2.1.12.1 RPC_BIDI_REQUEST_DATA
+class RPC_BIDI_REQUEST_DATA(NDRSTRUCT):
+    structure = (
+        ('dwReqNumber', DWORD),
+        ('pSchema', LPWSTR),
+        ('data', RPC_BIDI_DATA),
+    )
+
+class RPC_BIDI_REQUEST_DATA_ARRAY(NDRUniConformantArray):
+    item = RPC_BIDI_REQUEST_DATA
+
+class _RPC_BIDI_CONTAINER(NDRSTRUCT):
+    def getAlignment(self):
+        # NDRArray currently computes alignment using an NDR32 item instance.
+        # Both BIDI array element types contain pointers and align to 8 in NDR64.
+        return 8 if self._isNDR64 else 4
+
+    def getData(self, soFar=0):
+        data = NDRSTRUCT.getData(self, soFar)
+        # For nonempty arrays, the first element aligns the fixed header. An
+        # empty array still needs the NDR64 trailing gap after the three DWORDs.
+        if self._isNDR64 and not self['aData']:
+            data += b'\x00' * (-(soFar + len(data)) % self.getAlignment())
+        return data
+
+    def fromString(self, data, offset=0):
+        size = NDRSTRUCT.fromString(self, data, offset)
+        if self._isNDR64 and not self['aData']:
+            size += -(offset + size) % self.getAlignment()
+        return size
+
+# 2.2.1.2.10 RPC_BIDI_REQUEST_CONTAINER
+class RPC_BIDI_REQUEST_CONTAINER(_RPC_BIDI_CONTAINER):
+    # aData is an inline conformant array, not a pointer to an array.
+    # NDR moves its maximum count ahead of Version, Flags, and Count.
+    structure = (
+        ('Version', DWORD),
+        ('Flags', DWORD),
+        ('Count', DWORD),
+        ('aData', RPC_BIDI_REQUEST_DATA_ARRAY),
+    )
+
+# 2.2.1.12.2 RPC_BIDI_RESPONSE_DATA
+class RPC_BIDI_RESPONSE_DATA(NDRSTRUCT):
+    structure = (
+        ('dwResult', DWORD),
+        ('dwReqNumber', DWORD),
+        ('pSchema', LPWSTR),
+        ('data', RPC_BIDI_DATA),
+    )
+
+class RPC_BIDI_RESPONSE_DATA_ARRAY(NDRUniConformantArray):
+    item = RPC_BIDI_RESPONSE_DATA
+
+# 2.2.1.2.11 RPC_BIDI_RESPONSE_CONTAINER
+class RPC_BIDI_RESPONSE_CONTAINER(_RPC_BIDI_CONTAINER):
+    structure = (
+        ('Version', DWORD),
+        ('Flags', DWORD),
+        ('Count', DWORD),
+        ('aData', RPC_BIDI_RESPONSE_DATA_ARRAY),
+    )
+
+class PRPC_BIDI_RESPONSE_CONTAINER(NDRPOINTER):
+    referent = (
+        ('Data', RPC_BIDI_RESPONSE_CONTAINER),
     )
 
 # 2.2.1.11.1 SPLCLIENT_INFO_1
@@ -484,6 +612,23 @@ class RpcAddPrinterDriverExResponse(NDRCALL):
        ('ErrorCode', ULONG),
     )
 
+# 3.1.4.2.27 RpcSendRecvBidiData (Opnum 97)
+class RpcSendRecvBidiData(NDRCALL):
+    opnum = 97
+    structure = (
+        ('hPrinter', PRINTER_HANDLE),
+        ('pAction', LPWSTR),
+        # The top-level [ref] pointer has no referent ID on the wire.
+        ('pReqData', RPC_BIDI_REQUEST_CONTAINER),
+    )
+
+class RpcSendRecvBidiDataResponse(NDRCALL):
+    structure = (
+        # The outer [ref] pointer is implicit; the inner pointer can be NULL.
+        ('ppRespData', PRPC_BIDI_RESPONSE_CONTAINER),
+        ('ErrorCode', ULONG),
+    )
+
 ################################################################################
 # OPNUMs and their corresponding structures
 ################################################################################
@@ -497,6 +642,7 @@ OPNUMS = {
     69 : (RpcOpenPrinterEx, RpcOpenPrinterExResponse),
     88 : (RpcXcvData, RpcXcvDataResponse),
     89 : (RpcAddPrinterDriverEx, RpcAddPrinterDriverExResponse),
+    97 : (RpcSendRecvBidiData, RpcSendRecvBidiDataResponse),
 }
 
 ################################################################################
@@ -577,6 +723,30 @@ def hRpcXcvData(dce, hXcv, pszDataName, pInputData=NULL, cbOutputData=0, pdwStat
     request['cbInputData'] = 0 if pInputData is NULL else len(pInputData)
     request['cbOutputData'] = cbOutputData
     request['pdwStatus'] = pdwStatus
+    return dce.request(request)
+
+
+def hRpcSendRecvBidiData(dce, hPrinter, pAction, pReqData):
+    """
+    Sends and receives bidirectional data through a printer's port monitor.
+    See [MS-RPRN] section 3.1.4.2.27.
+
+    :param DCERPC_v5 dce: a connected DCE instance.
+    :param PRINTER_HANDLE hPrinter: an open printer or port handle.
+    :param string pAction: a BIDI_ACTION_* string, or a monitor-specific action.
+    :param RPC_BIDI_REQUEST_CONTAINER pReqData: request container with Version=1,
+        Flags=0, and Count matching aData. Schema and string data must be
+        null-terminated, and each data.u.tag must match data.dwBidiType.
+        For EnumSchema, pass a container with Count=0 and an empty aData array.
+
+    :return: a RpcSendRecvBidiDataResponse instance. ppRespData can be NULL.
+        Nonzero method status raises DCERPCSessionError; individual response
+        dwResult values must be checked separately by the caller.
+    """
+    request = RpcSendRecvBidiData()
+    request['hPrinter'] = hPrinter
+    request['pAction'] = checkNullString(pAction)
+    request['pReqData'] = pReqData
     return dce.request(request)
 
 
